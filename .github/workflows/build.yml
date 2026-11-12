@@ -1,0 +1,945 @@
+
+name: LIVAI - Shadows of Hell Android Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: livai-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-android:
+    name: Build LIVAI Android APK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Install Godot 4.4.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          GODOT_VERSION="4.4.1"
+          GODOT_TAG="4.4.1-stable"
+
+          mkdir -p "$HOME/godot"
+          cd "$HOME/godot"
+
+          wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_TAG}/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" -O godot.zip
+          unzip -q godot.zip
+          chmod +x Godot_v${GODOT_VERSION}-stable_linux.x86_64
+
+          sudo mv Godot_v${GODOT_VERSION}-stable_linux.x86_64 /usr/local/bin/godot
+          godot --version
+
+      - name: Install matching Godot export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          GODOT_VERSION="4.4.1"
+          GODOT_TAG="4.4.1-stable"
+          TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+
+          mkdir -p "$TEMPLATE_DIR" "$HOME/godot-templates"
+          cd "$HOME/godot-templates"
+
+          wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_TAG}/Godot_v${GODOT_VERSION}-stable_export_templates.tpz" -O templates.tpz
+          unzip -q templates.tpz -d extracted
+          cp -r extracted/templates/. "$TEMPLATE_DIR/"
+
+          test -f "$TEMPLATE_DIR/android_debug.apk"
+          test -f "$TEMPLATE_DIR/android_release.apk"
+
+      - name: Create LIVAI project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p scenes scripts assets build
+
+          cat > project.godot <<'EOF'
+          config_version=5
+
+          [application]
+          config/name="LIVAI: Shadows of Hell"
+          run/main_scene="res://scenes/main.tscn"
+          config/features=PackedStringArray("4.4", "GL Compatibility")
+          config/description="A dark pixel art action game."
+
+          [display]
+          window/size/viewport_width=960
+          window/size/viewport_height=540
+          window/size/window_width_override=1280
+          window/size/window_height_override=720
+          window/stretch/mode="canvas_items"
+          window/handheld/orientation=0
+
+          [rendering]
+          renderer/rendering_method="gl_compatibility"
+          renderer/rendering_method.mobile="gl_compatibility"
+          textures/default_filters/use_nearest_mipmap_filter=false
+          textures/default_filters/texture_filter=0
+          environment/defaults/default_clear_color=Color(0.025, 0.018, 0.045, 1)
+
+          [input]
+          move_left={
+          "deadzone": 0.5,
+          "events": [Object(InputEventKey,"physical_keycode":65)]
+          }
+          move_right={
+          "deadzone": 0.5,
+          "events": [Object(InputEventKey,"physical_keycode":68)]
+          }
+          jump={
+          "deadzone": 0.5,
+          "events": [Object(InputEventKey,"physical_keycode":32)]
+          }
+          attack={
+          "deadzone": 0.5,
+          "events": [Object(InputEventKey,"physical_keycode":74)]
+          }
+          dash={
+          "deadzone": 0.5,
+          "events": [Object(InputEventKey,"physical_keycode":75)]
+          }
+          EOF
+
+          cat > scenes/main.tscn <<'EOF'
+          [gd_scene load_steps=2 format=3]
+
+          [ext_resource type="Script" path="res://scripts/main.gd" id="1"]
+
+          [node name="LIVAI" type="Node2D"]
+          script = ExtResource("1")
+          EOF
+
+          cat > export_presets.cfg <<'EOF'
+          [preset.0]
+          name="Android"
+          platform="Android"
+          runnable=true
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          include_filter=""
+          exclude_filter=""
+          export_path="build/LIVAI-Shadows-of-Hell.apk"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          encrypt_pck=false
+          encrypt_directory=false
+
+          [preset.0.options]
+          custom_template/debug=""
+          custom_template/release=""
+          gradle_build/use_gradle_build=false
+          gradle_build/export_format=0
+          gradle_build/min_sdk=23
+          gradle_build/target_sdk=35
+          architectures/armeabi-v7a=false
+          architectures/arm64-v8a=true
+          architectures/x86=false
+          architectures/x86_64=false
+          version/code=1
+          version/name="1.0.0"
+          package/unique_name="com.livai.shadowsofhell"
+          package/name="LIVAI Shadows of Hell"
+          package/signed=true
+          screen/immersive_mode=true
+          screen/orientation=0
+          permissions/internet=false
+          EOF
+
+          cat > scripts/main.gd <<'EOF'
+          extends Node2D
+
+          const SCREEN_W := 960.0
+          const SCREEN_H := 540.0
+          const FLOOR_Y := 430.0
+          const GRAVITY := 1450.0
+          const PLAYER_SPEED := 270.0
+          const JUMP_POWER := -570.0
+
+          var player := {
+              "x": 150.0,
+              "y": FLOOR_Y,
+              "vx": 0.0,
+              "vy": 0.0,
+              "hp": 100,
+              "max_hp": 100,
+              "energy": 100.0,
+              "gold": 0,
+              "facing": 1,
+              "grounded": true,
+              "attack_timer": 0.0,
+              "attack_flash": 0.0,
+              "dash_timer": 0.0,
+              "invulnerable": 0.0,
+              "anim": 0.0
+          }
+
+          var enemies: Array = []
+          var particles: Array = []
+          var pickups: Array = []
+
+          var game_state := "menu"
+          var level := 1
+          var kills := 0
+          var score := 0
+          var wave_timer := 0.0
+          var spawn_timer := 1.0
+          var boss_spawned := false
+          var boss_defeated := false
+          var camera_shake := 0.0
+          var world_time := 0.0
+          var message := ""
+          var message_timer := 0.0
+          var touch_left := false
+          var touch_right := false
+          var touch_jump := false
+          var touch_attack := false
+          var touch_dash := false
+          var touch_origin := Vector2.ZERO
+          var touch_current := Vector2.ZERO
+          var joystick_active := false
+
+          var hero_texture: Texture2D
+          var enemy_texture: Texture2D
+          var demon_texture: Texture2D
+          var boss_texture: Texture2D
+          var sword_texture: Texture2D
+          var background_texture: Texture2D
+
+          func _ready() -> void:
+              texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+              _create_art()
+              _load_game()
+              _show_message("THE SHADOWS ARE WATCHING", 3.0)
+              queue_redraw()
+
+          func _process(delta: float) -> void:
+              var dt := minf(delta, 0.04)
+              world_time += dt
+
+              if message_timer > 0.0:
+                  message_timer -= dt
+
+              camera_shake = maxf(0.0, camera_shake - dt * 22.0)
+
+              if game_state == "playing":
+                  _update_player(dt)
+                  _update_enemies(dt)
+                  _update_particles(dt)
+                  _update_pickups(dt)
+                  _update_spawning(dt)
+
+              queue_redraw()
+
+          func _create_art() -> void:
+              hero_texture = _make_character("hero")
+              enemy_texture = _make_character("enemy")
+              demon_texture = _make_character("demon")
+              boss_texture = _make_character("boss")
+              sword_texture = _make_sword()
+              background_texture = _make_background()
+
+          func _make_character(kind: String) -> Texture2D:
+              var img := Image.create(24, 32, false, Image.FORMAT_RGBA8)
+              img.fill(Color(0, 0, 0, 0))
+
+              var skin := Color("#e9c4b5")
+              var hair := Color("#e8e8ed")
+              var armor := Color("#aab2c8")
+              var dark := Color("#202033")
+              var red := Color("#8d263c")
+              var glow := Color("#6ce6ee")
+
+              if kind == "enemy":
+                  skin = Color("#9e6b66")
+                  hair = Color("#352536")
+                  armor = Color("#4c354a")
+                  red = Color("#c43e50")
+              elif kind == "demon":
+                  skin = Color("#a9444d")
+                  hair = Color("#311c2d")
+                  armor = Color("#512536")
+                  red = Color("#ff5b48")
+              elif kind == "boss":
+                  skin = Color("#8c354c")
+                  hair = Color("#191725")
+                  armor = Color("#46304e")
+                  red = Color("#ff304f")
+                  glow = Color("#ffb04b")
+
+              _px(img, 7, 2, 10, 2, hair)
+              _px(img, 5, 4, 14, 5, hair)
+              _px(img, 7, 7, 10, 5, skin)
+              _px(img, 8, 9, 2, 1, dark)
+              _px(img, 14, 9, 2, 1, dark)
+              _px(img, 7, 12, 10, 2, dark)
+              _px(img, 5, 14, 14, 9, armor)
+              _px(img, 3, 15, 4, 7, dark)
+              _px(img, 17, 15, 4, 7, dark)
+              _px(img, 6, 16, 12, 2, Color("#dce2eb"))
+              _px(img, 9, 18, 6, 4, red)
+              _px(img, 7, 23, 4, 7, dark)
+              _px(img, 14, 23, 4, 7, dark)
+              _px(img, 5, 29, 7, 2, Color("#12121e"))
+              _px(img, 13, 29, 7, 2, Color("#12121e"))
+
+              if kind == "hero":
+                  _px(img, 3, 2, 4, 8, hair)
+                  _px(img, 17, 2, 4, 8, hair)
+                  _px(img, 8, 10, 2, 1, glow)
+                  _px(img, 14, 10, 2, 1, glow)
+                  _px(img, 5, 14, 2, 8, Color("#d4d9e7"))
+                  _px(img, 17, 14, 2, 8, Color("#d4d9e7"))
+                  _px(img, 10, 19, 4, 3, Color("#f4d7e5"))
+              elif kind == "boss":
+                  _px(img, 2, 0, 5, 8, red)
+                  _px(img, 17, 0, 5, 8, red)
+                  _px(img, 7, 9, 3, 2, glow)
+                  _px(img, 14, 9, 3, 2, glow)
+
+              return ImageTexture.create_from_image(img)
+
+          func _make_sword() -> Texture2D:
+              var img := Image.create(8, 32, false, Image.FORMAT_RGBA8)
+              img.fill(Color(0, 0, 0, 0))
+              _px(img, 3, 0, 2, 23, Color("#d9f7ff"))
+              _px(img, 2, 3, 1, 17, Color("#75dce9"))
+              _px(img, 1, 20, 6, 3, Color("#a77b50"))
+              _px(img, 3, 23, 2, 7, Color("#5c3541"))
+              _px(img, 2, 29, 4, 2, Color("#d9b477"))
+              return ImageTexture.create_from_image(img)
+
+          func _make_background() -> Texture2D:
+              var img := Image.create(320, 180, false, Image.FORMAT_RGBA8)
+              img.fill(Color("#100d20"))
+
+              for x in range(320):
+                  var shade := float(x) / 320.0
+                  var c := Color("#171328").lerp(Color("#29152d"), shade)
+                  for y in range(180):
+                      img.set_pixel(x, y, c)
+
+              for i in range(32):
+                  var sx := (i * 47 + 13) % 320
+                  var sy := (i * 29 + 9) % 110
+                  img.set_pixel(sx, sy, Color("#e9d7b5"))
+                  if i % 3 == 0:
+                      img.set_pixel(mini(sx + 1, 319), sy, Color("#e9d7b5"))
+
+              for x in range(0, 320, 32):
+                  var tower_h := 25 + ((x * 7) % 42)
+                  _px(img, x, 125 - tower_h, 20, tower_h, Color("#21182c"))
+                  _px(img, x + 4, 125 - tower_h - 5, 12, 5, Color("#35203a"))
+                  _px(img, x + 7, 130 - tower_h, 3, 7, Color("#d64a56"))
+
+              return ImageTexture.create_from_image(img)
+
+          func _px(img: Image, x: int, y: int, w: int, h: int, color: Color) -> void:
+              for py in range(y, mini(y + h, img.get_height())):
+                  for px in range(x, mini(x + w, img.get_width())):
+                      if px >= 0 and py >= 0:
+                          img.set_pixel(px, py, color)
+
+          func _update_player(delta: float) -> void:
+              player["anim"] = float(player["anim"]) + delta * 9.0
+              player["attack_timer"] = maxf(0.0, float(player["attack_timer"]) - delta)
+              player["attack_flash"] = maxf(0.0, float(player["attack_flash"]) - delta)
+              player["dash_timer"] = maxf(0.0, float(player["dash_timer"]) - delta)
+              player["invulnerable"] = maxf(0.0, float(player["invulnerable"]) - delta)
+              player["energy"] = minf(100.0, float(player["energy"]) + delta * 8.0)
+
+              var direction := 0.0
+              if Input.is_action_pressed("move_left") or touch_left:
+                  direction -= 1.0
+              if Input.is_action_pressed("move_right") or touch_right:
+                  direction += 1.0
+
+              if joystick_active:
+                  var diff := touch_current.x - touch_origin.x
+                  if absf(diff) > 12.0:
+                      direction = signf(diff)
+
+              if player["dash_timer"] > 0.0:
+                  player["vx"] = float(player["facing"]) * 720.0
+              else:
+                  player["vx"] = direction * PLAYER_SPEED
+
+              if direction != 0.0:
+                  player["facing"] = int(signf(direction))
+
+              player["x"] = clampf(float(player["x"]) + float(player["vx"]) * delta, 35.0, 925.0)
+
+              player["vy"] = float(player["vy"]) + GRAVITY * delta
+              player["y"] = float(player["y"]) + float(player["vy"]) * delta
+
+              if float(player["y"]) >= FLOOR_Y:
+                  player["y"] = FLOOR_Y
+                  player["vy"] = 0.0
+                  player["grounded"] = true
+              else:
+                  player["grounded"] = false
+
+              if (Input.is_action_just_pressed("jump") or touch_jump) and bool(player["grounded"]):
+                  player["vy"] = JUMP_POWER
+                  player["grounded"] = false
+                  _spawn_particles(Vector2(float(player["x"]), float(player["y"])), Color("#c4d9ee"), 5)
+
+              if Input.is_action_just_pressed("attack") or touch_attack:
+                  _attack()
+
+              if Input.is_action_just_pressed("dash") or touch_dash:
+                  _dash()
+
+              touch_jump = false
+              touch_attack = false
+              touch_dash = false
+
+          func _attack() -> void:
+              if float(player["attack_timer"]) > 0.0:
+                  return
+
+              player["attack_timer"] = 0.32
+              player["attack_flash"] = 0.22
+              var px := float(player["x"])
+              var facing := int(player["facing"])
+              var hit_count := 0
+
+              for enemy in enemies:
+                  if not bool(enemy.get("dead", false)):
+                      var dx: float = float(enemy["x"]) - px
+                      var dy: float = absf(float(enemy["y"]) - float(player["y"]))
+                      if dx * facing > -12.0 and dx * facing < 105.0 and dy < 65.0:
+                          enemy["hp"] = int(enemy["hp"]) - 35
+                          enemy["vx"] = facing * 250.0
+                          enemy["flash"] = 0.15
+                          hit_count += 1
+                          _spawn_particles(Vector2(float(enemy["x"]), float(enemy["y"]) - 35.0), Color("#b9f5ff"), 8)
+                          if int(enemy["hp"]) <= 0:
+                              _kill_enemy(enemy)
+
+              if hit_count > 0:
+                  score += hit_count * 15
+                  camera_shake = 4.0
+
+          func _dash() -> void:
+              if float(player["energy"]) < 25.0 or float(player["dash_timer"]) > 0.0:
+                  return
+              player["energy"] = float(player["energy"]) - 25.0
+              player["dash_timer"] = 0.18
+              player["invulnerable"] = 0.28
+              _spawn_particles(Vector2(float(player["x"]), float(player["y"]) - 25.0), Color("#65e5f2"), 7)
+
+          func _update_enemies(delta: float) -> void:
+              for enemy in enemies:
+                  if bool(enemy.get("dead", false)):
+                      continue
+
+                  enemy["flash"] = maxf(0.0, float(enemy["flash"]) - delta)
+                  enemy["attack_timer"] = maxf(0.0, float(enemy["attack_timer"]) - delta)
+                  enemy["x"] = float(enemy["x"]) + float(enemy["vx"]) * delta
+                  enemy["vx"] = move_toward(float(enemy["vx"]), 0.0, 700.0 * delta)
+
+                  var dx := float(player["x"]) - float(enemy["x"])
+                  var distance := absf(dx)
+                  var speed := float(enemy["speed"])
+
+                  if distance > 43.0:
+                      enemy["x"] = float(enemy["x"]) + signf(dx) * speed * delta
+
+                  if distance < 52.0 and absf(float(player["y"]) - float(enemy["y"])) < 55.0:
+                      if float(enemy["attack_timer"]) <= 0.0:
+                          enemy["attack_timer"] = 1.0 if not bool(enemy["boss"]) else 0.72
+                          _damage_player(10 if not bool(enemy["boss"]) else 18)
+
+              enemies = enemies.filter(func(e): return not bool(e.get("dead", false)))
+
+          func _damage_player(amount: int) -> void:
+              if float(player["invulnerable"]) > 0.0:
+                  return
+              player["hp"] = maxi(0, int(player["hp"]) - amount)
+              player["invulnerable"] = 0.75
+              camera_shake = 8.0
+              _spawn_particles(Vector2(float(player["x"]), float(player["y"]) - 30.0), Color("#ff5669"), 10)
+
+              if int(player["hp"]) <= 0:
+                  game_state = "gameover"
+                  _save_game()
+
+          func _kill_enemy(enemy: Dictionary) -> void:
+              enemy["dead"] = true
+              kills += 1
+              score += 100
+              player["gold"] = int(player["gold"]) + (35 if bool(enemy["boss"]) else 12)
+              _spawn_particles(Vector2(float(enemy["x"]), float(enemy["y"]) - 25.0), Color("#ff6472"), 18)
+
+              if bool(enemy["boss"]):
+                  boss_defeated = true
+                  _show_message("THE DEMON LORD HAS FALLEN!", 4.0)
+                  game_state = "victory"
+                  _save_game()
+
+              elif kills > 0 and kills % 5 == 0:
+                  _show_message("A SHADOW HAS BEEN BANISHED", 1.5)
+
+          func _update_spawning(delta: float) -> void:
+              wave_timer += delta
+              spawn_timer -= delta
+
+              if spawn_timer <= 0.0 and enemies.size() < 5 and not boss_spawned:
+                  spawn_timer = maxf(1.0, 3.0 - float(level) * 0.12)
+                  _spawn_enemy()
+
+              if kills >= level * 8 and not boss_spawned:
+                  boss_spawned = true
+                  _spawn_boss()
+
+          func _spawn_enemy() -> void:
+              var side := 1.0 if randf() > 0.5 else -1.0
+              var enemy_type := "demon" if level >= 3 and randf() > 0.55 else "enemy"
+              enemies.append({
+                  "x": 900.0 if side < 0.0 else 60.0,
+                  "y": FLOOR_Y,
+                  "hp": 75 if enemy_type == "enemy" else 110,
+                  "max_hp": 75 if enemy_type == "enemy" else 110,
+                  "speed": randf_range(65.0, 105.0) + float(level) * 5.0,
+                  "vx": 0.0,
+                  "flash": 0.0,
+                  "attack_timer": 0.6,
+                  "type": enemy_type,
+                  "boss": false,
+                  "dead": false
+              })
+
+          func _spawn_boss() -> void:
+              enemies.append({
+                  "x": 820.0,
+                  "y": FLOOR_Y,
+                  "hp": 650 + level * 80,
+                  "max_hp": 650 + level * 80,
+                  "speed": 78.0,
+                  "vx": 0.0,
+                  "flash": 0.0,
+                  "attack_timer": 1.0,
+                  "type": "boss",
+                  "boss": true,
+                  "dead": false
+              })
+              _show_message("WARNING: THE DEMON LORD", 4.0)
+
+          func _update_particles(delta: float) -> void:
+              for p in particles:
+                  p["life"] = float(p["life"]) - delta
+                  p["x"] = float(p["x"]) + float(p["vx"]) * delta
+                  p["y"] = float(p["y"]) + float(p["vy"]) * delta
+                  p["vy"] = float(p["vy"]) + 260.0 * delta
+              particles = particles.filter(func(p): return float(p["life"]) > 0.0)
+
+          func _spawn_particles(pos: Vector2, color: Color, count: int) -> void:
+              for i in range(count):
+                  particles.append({
+                      "x": pos.x,
+                      "y": pos.y,
+                      "vx": randf_range(-150.0, 150.0),
+                      "vy": randf_range(-210.0, 30.0),
+                      "life": randf_range(0.2, 0.65),
+                      "color": color,
+                      "size": randi_range(2, 5)
+                  })
+
+          func _update_pickups(delta: float) -> void:
+              for item in pickups:
+                  item["life"] = float(item["life"]) - delta
+              pickups = pickups.filter(func(p): return float(p["life"]) > 0.0)
+
+          func _draw() -> void:
+              var shake := Vector2.ZERO
+              if camera_shake > 0.0:
+                  shake = Vector2(randf_range(-camera_shake, camera_shake), randf_range(-camera_shake, camera_shake))
+
+              draw_set_transform(shake)
+              _draw_world()
+              if game_state == "menu":
+                  _draw_menu()
+              elif game_state == "playing":
+                  _draw_hud()
+                  _draw_touch_controls()
+              elif game_state == "upgrade":
+                  _draw_upgrade()
+              elif game_state == "gameover":
+                  _draw_end_screen(false)
+              elif game_state == "victory":
+                  _draw_end_screen(true)
+              draw_set_transform(Vector2.ZERO)
+
+          func _draw_world() -> void:
+              draw_rect(Rect2(0, 0, SCREEN_W, SCREEN_H), Color("#100d20"))
+              draw_texture_rect(background_texture, Rect2(0, 0, SCREEN_W, 470), false)
+
+              draw_rect(Rect2(0, 385, SCREEN_W, 155), Color("#1b1425"))
+              draw_rect(Rect2(0, 423, SCREEN_W, 12), Color("#59405a"))
+              draw_rect(Rect2(0, 435, SCREEN_W, 105), Color("#100e1a"))
+
+              for i in range(20):
+                  var x := float(i * 53)
+                  draw_rect(Rect2(x, 446, 2, 2), Color("#59415a"))
+                  draw_rect(Rect2(x + 18, 475, 3, 2), Color("#35273f"))
+
+              for i in range(5):
+                  var fx := float(i * 210 + 65)
+                  draw_rect(Rect2(fx, 410, 3, 12), Color("#f2a15d"))
+                  draw_rect(Rect2(fx - 4, 405, 11, 5), Color("#f6d08b"))
+
+              for enemy in enemies:
+                  _draw_enemy(enemy)
+
+              _draw_player()
+              _draw_particles()
+
+          func _draw_player() -> void:
+              var x := float(player["x"])
+              var y := float(player["y"])
+              var facing := int(player["facing"])
+              var bob := 0.0
+
+              if bool(player["grounded"]):
+                  bob = sin(float(player["anim"])) * 2.0
+
+              if float(player["invulnerable"]) > 0.0 and int(world_time * 18.0) % 2 == 0:
+                  return
+
+              var rect := Rect2(x - 24, y - 66 + bob, 48, 64)
+              draw_texture_rect(hero_texture, rect, false)
+
+              if float(player["attack_flash"]) > 0.0:
+                  var sword_x := x + float(facing) * 25.0
+                  var sword_rect := Rect2(sword_x - 5, y - 82, 14, 52)
+                  if facing < 0:
+                      sword_rect.position.x -= 8
+                  draw_texture_rect(sword_texture, sword_rect, false)
+                  draw_arc(Vector2(x + facing * 38.0, y - 42.0), 42.0, -1.1, 1.1, 16, Color("#a5f6ff"), 4.0)
+
+              draw_rect(Rect2(x - 22, y - 72, 44, 3), Color("#241c2b"))
+              draw_rect(Rect2(x - 22, y - 72, 44.0 * float(player["hp"]) / float(player["max_hp"]), 3), Color("#68e5a4"))
+
+          func _draw_enemy(enemy: Dictionary) -> void:
+              var x := float(enemy["x"])
+              var y := float(enemy["y"])
+              var is_boss := bool(enemy["boss"])
+              var tex: Texture2D = enemy_texture
+
+              if is_boss:
+                  tex = boss_texture
+              elif str(enemy["type"]) == "demon":
+                  tex = demon_texture
+
+              var width := 48.0 if not is_boss else 90.0
+              var height := 64.0 if not is_boss else 105.0
+              if float(enemy["flash"]) > 0.0:
+                  draw_rect(Rect2(x - width * 0.5, y - height, width, height), Color("#ffffff", 0.45))
+
+              draw_texture_rect(tex, Rect2(x - width * 0.5, y - height, width, height), false)
+
+              var bar_w := 54.0 if not is_boss else 120.0
+              var bar_y := y - height - 10.0
+              draw_rect(Rect2(x - bar_w * 0.5, bar_y, bar_w, 5), Color("#271923"))
+              draw_rect(Rect2(x - bar_w * 0.5, bar_y, bar_w * float(enemy["hp"]) / float(enemy["max_hp"]), 5), Color("#e64d61"))
+
+          func _draw_particles() -> void:
+              for p in particles:
+                  var alpha := clampf(float(p["life"]) * 2.0, 0.0, 1.0)
+                  var c: Color = p["color"]
+                  c.a = alpha
+                  draw_rect(Rect2(float(p["x"]), float(p["y"]), float(p["size"]), float(p["size"])), c)
+
+          func _draw_hud() -> void:
+              draw_rect(Rect2(18, 16, 260, 76), Color("#100d20", 0.82))
+              draw_rect(Rect2(18, 16, 260, 76), Color("#79536f"), false, 2.0)
+
+              draw_string(ThemeDB.fallback_font, Vector2(30, 39), "LIVAI", HORIZONTAL_ALIGNMENT_LEFT, -1, 19, Color("#e8e5f5"))
+              draw_string(ThemeDB.fallback_font, Vector2(30, 59), "HP", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("#f08b9b"))
+              draw_rect(Rect2(63, 49, 190, 12), Color("#38202f"))
+              draw_rect(Rect2(63, 49, 190.0 * float(player["hp"]) / float(player["max_hp"]), 12), Color("#e64e70"))
+
+              draw_string(ThemeDB.fallback_font, Vector2(30, 81), "ENERGY", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("#8eeaf2"))
+              draw_rect(Rect2(93, 72, 160, 8), Color("#24233d"))
+              draw_rect(Rect2(93, 72, 160.0 * float(player["energy"]) / 100.0, 8), Color("#5acfe2"))
+
+              draw_string(ThemeDB.fallback_font, Vector2(780, 34), "STAGE %02d" % level, HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color("#f0d7a3"))
+              draw_string(ThemeDB.fallback_font, Vector2(780, 59), "GOLD %04d" % int(player["gold"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color("#f7c76c"))
+              draw_string(ThemeDB.fallback_font, Vector2(780, 81), "KILLS %03d" % kills, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("#d8d0e7"))
+
+              if message_timer > 0.0:
+                  _draw_center(message, Vector2(0, 125), Color("#f6d9ed"), 20)
+
+              if boss_spawned and not boss_defeated:
+                  for enemy in enemies:
+                      if bool(enemy["boss"]):
+                          draw_rect(Rect2(270, 105, 420, 10), Color("#271923"))
+                          draw_rect(Rect2(270, 105, 420.0 * float(enemy["hp"]) / float(enemy["max_hp"]), 10), Color("#e34b63"))
+                          _draw_center("DEMON LORD", Vector2(0, 99), Color("#ffb1b5"), 12)
+
+          func _draw_touch_controls() -> void:
+              draw_circle(Vector2(115, 455), 54, Color("#c7d8ee", 0.10))
+              draw_circle(Vector2(115, 455), 25, Color("#c7d8ee", 0.16))
+              draw_circle(Vector2(115 + (touch_current.x - touch_origin.x if joystick_active else 0.0), 455), 17, Color("#e7f4ff", 0.25))
+
+              _draw_button(Vector2(805, 465), "HIT", Color("#b83c59"))
+              _draw_button(Vector2(900, 465), "JUMP", Color("#466d9b"))
+              _draw_button(Vector2(710, 465), "DASH", Color("#397f8c"))
+
+          func _draw_button(pos: Vector2, label: String, color: Color) -> void:
+              draw_circle(pos, 37, Color("#090814", 0.55))
+              draw_circle(pos, 31, color.darkened(0.15))
+              draw_circle(pos, 25, color)
+              draw_string(ThemeDB.fallback_font, pos + Vector2(-22, 5), label, HORIZONTAL_ALIGNMENT_CENTER, 44, 11, Color.WHITE)
+
+          func _draw_menu() -> void:
+              draw_rect(Rect2(0, 0, SCREEN_W, SCREEN_H), Color("#080711", 0.72))
+              _draw_center("LIVAI", Vector2(0, 155), Color("#f1eafa"), 64)
+              _draw_center("SHADOWS OF HELL", Vector2(0, 195), Color("#d96a88"), 23)
+              _draw_center("THE LAST VALERIAN KNIGHT", Vector2(0, 235), Color("#a9a2c4"), 15)
+              draw_rect(Rect2(330, 300, 300, 62), Color("#55263f"))
+              draw_rect(Rect2(330, 300, 300, 62), Color("#e48ca8"), false, 3.0)
+              _draw_center("START GAME", Vector2(0, 340), Color("#fff0f6"), 24)
+              _draw_center("WASD MOVE  |  SPACE JUMP  |  J ATTACK  |  K DASH", Vector2(0, 420), Color("#b6a9ca"), 13)
+              _draw_center("TOUCH CONTROLS AVAILABLE", Vector2(0, 445), Color("#8f879f"), 12)
+              _draw_center("BEST SCORE: %d" % score, Vector2(0, 480), Color("#f3ce85"), 14)
+
+          func _draw_upgrade() -> void:
+              draw_rect(Rect2(0, 0, SCREEN_W, SCREEN_H), Color("#080611", 0.9))
+              draw_rect(Rect2(220, 75, 520, 390), Color("#21182d"))
+              draw_rect(Rect2(220, 75, 520, 390), Color("#a77b9a"), false, 3.0)
+              _draw_center("VALERIAN UPGRADES", Vector2(0, 125), Color("#f1d7ef"), 27)
+              _draw_center("1 - RESTORE HEALTH (+40 HP)", Vector2(0, 220), Color("#e8e0ee"), 19)
+              _draw_center("2 - SHARPEN SWORD (+DAMAGE)", Vector2(0, 270), Color("#e8e0ee"), 19)
+              _draw_center("3 - RESTORE ENERGY (+50)", Vector2(0, 320), Color("#e8e0ee"), 19)
+              _draw_center("GOLD: %d" % int(player["gold"]), Vector2(0, 405), Color("#ffe39b"), 17)
+              _draw_center("PRESS 1, 2 OR 3", Vector2(0, 440), Color("#c7a9d3"), 14)
+
+          func _draw_end_screen(won: bool) -> void:
+              draw_rect(Rect2(0, 0, SCREEN_W, SCREEN_H), Color("#080611", 0.88))
+              if won:
+                  _draw_center("VICTORY", Vector2(0, 180), Color("#f8d78f"), 55)
+                  _draw_center("THE HELL GATE IS SEALED", Vector2(0, 235), Color("#e8d7f0"), 20)
+              else:
+                  _draw_center("YOU HAVE FALLEN", Vector2(0, 180), Color("#ed6b83"), 46)
+                  _draw_center("THE SHADOWS CLAIM ANOTHER SOUL", Vector2(0, 235), Color("#c6b4cf"), 17)
+
+              _draw_center("SCORE: %d     KILLS: %d" % [score, kills], Vector2(0, 310), Color("#f3d9a4"), 20)
+              _draw_center("TAP OR PRESS ENTER TO RETURN", Vector2(0, 390), Color("#e5d7ee"), 17)
+
+          func _draw_center(text: String, offset: Vector2, color: Color, size: int) -> void:
+              var font := ThemeDB.fallback_font
+              var width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+              draw_string(font, Vector2((SCREEN_W - width) * 0.5 + offset.x, offset.y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+
+          func _unhandled_input(event: InputEvent) -> void:
+              if event is InputEventKey and event.pressed and not event.echo:
+                  if game_state == "menu" and event.keycode == KEY_ENTER:
+                      _start_game()
+                  elif game_state == "gameover" or game_state == "victory":
+                      if event.keycode == KEY_ENTER:
+                          _return_to_menu()
+                  elif game_state == "upgrade":
+                      _choose_upgrade(event.keycode)
+
+              if event is InputEventScreenTouch:
+                  if event.pressed:
+                      _touch_down(event.position)
+                  else:
+                      _touch_up(event.position)
+
+              if event is InputEventScreenDrag:
+                  _touch_drag(event.position)
+
+              if event is InputEventMouseButton and event.pressed:
+                  _handle_tap(event.position)
+
+          func _touch_down(pos: Vector2) -> void:
+              if game_state == "menu":
+                  _start_game()
+                  return
+              if game_state == "gameover" or game_state == "victory":
+                  _return_to_menu()
+                  return
+              if game_state == "upgrade":
+                  _choose_upgrade_at(pos)
+                  return
+
+              if pos.x < 260.0:
+                  joystick_active = true
+                  touch_origin = Vector2(115, 455)
+                  touch_current = pos
+              elif pos.x > 860.0:
+                  if pos.y > 400.0:
+                      touch_jump = true
+              elif pos.x > 755.0 and pos.y > 400.0:
+                  touch_attack = true
+              elif pos.x > 660.0 and pos.y > 400.0:
+                  touch_dash = true
+              elif pos.x > 500.0:
+                  touch_attack = true
+
+          func _touch_drag(pos: Vector2) -> void:
+              if joystick_active:
+                  touch_current = pos
+
+          func _touch_up(_pos: Vector2) -> void:
+              joystick_active = false
+              touch_left = false
+              touch_right = false
+              touch_current = Vector2.ZERO
+
+          func _handle_tap(pos: Vector2) -> void:
+              if game_state == "menu":
+                  _start_game()
+              elif game_state == "gameover" or game_state == "victory":
+                  _return_to_menu()
+              elif game_state == "upgrade":
+                  _choose_upgrade_at(pos)
+
+          func _choose_upgrade_at(pos: Vector2) -> void:
+              if pos.y < 245.0:
+                  _choose_upgrade(KEY_1)
+              elif pos.y < 295.0:
+                  _choose_upgrade(KEY_2)
+              else:
+                  _choose_upgrade(KEY_3)
+
+          func _choose_upgrade(key: int) -> void:
+              if game_state != "upgrade":
+                  return
+
+              if key == KEY_1:
+                  player["hp"] = mini(int(player["max_hp"]), int(player["hp"]) + 40)
+              elif key == KEY_2:
+                  score += 250
+              elif key == KEY_3:
+                  player["energy"] = 100.0
+              else:
+                  return
+
+              level += 1
+              boss_spawned = false
+              boss_defeated = false
+              kills = 0
+              enemies.clear()
+              spawn_timer = 1.0
+              game_state = "playing"
+              _show_message("STAGE %d - KEEP FIGHTING" % level, 2.5)
+
+          func _start_game() -> void:
+              player["x"] = 150.0
+              player["y"] = FLOOR_Y
+              player["vx"] = 0.0
+              player["vy"] = 0.0
+              player["hp"] = 100
+              player["max_hp"] = 100
+              player["energy"] = 100.0
+              player["gold"] = 0
+              player["facing"] = 1
+              player["grounded"] = true
+              player["attack_timer"] = 0.0
+              player["attack_flash"] = 0.0
+              player["dash_timer"] = 0.0
+              player["invulnerable"] = 0.0
+              level = 1
+              kills = 0
+              score = 0
+              enemies.clear()
+              particles.clear()
+              pickups.clear()
+              boss_spawned = false
+              boss_defeated = false
+              spawn_timer = 1.0
+              game_state = "playing"
+              _show_message("THE JOURNEY BEGINS", 2.5)
+
+          func _return_to_menu() -> void:
+              game_state = "menu"
+              enemies.clear()
+              _save_game()
+
+          func _show_message(text: String, duration: float) -> void:
+              message = text
+              message_timer = duration
+
+          func _save_game() -> void:
+              var data := {
+                  "best_score": maxi(score, int(_read_best_score())),
+                  "best_level": level
+              }
+              var file := FileAccess.open("user://livai_save.json", FileAccess.WRITE)
+              if file != null:
+                  file.store_string(JSON.stringify(data))
+                  file.close()
+
+          func _load_game() -> void:
+              if not FileAccess.file_exists("user://livai_save.json"):
+                  return
+              var file := FileAccess.open("user://livai_save.json", FileAccess.READ)
+              if file == null:
+                  return
+              var parsed = JSON.parse_string(file.get_as_text())
+              file.close()
+              if parsed is Dictionary:
+                  score = int(parsed.get("best_score", 0))
+
+          func _read_best_score() -> int:
+              return score
+
+          func _notification(what: int) -> void:
+              if what == NOTIFICATION_WM_CLOSE_REQUEST:
+                  _save_game()
+          EOF
+
+      - name: Validate project and GDScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          godot --headless --editor --path . --quit
+
+      - name: Export Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          godot --headless --path . --export-debug "Android" build/LIVAI-Shadows-of-Hell.apk
+          test -s build/LIVAI-Shadows-of-Hell.apk
+          ls -lh build/LIVAI-Shadows-of-Hell.apk
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LIVAI-Shadows-of-Hell-Android
+          path: build/LIVAI-Shadows-of-Hell.apk
+          if-no-files-found: error
+          retention-days: 14
